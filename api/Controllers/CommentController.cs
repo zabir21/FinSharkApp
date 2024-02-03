@@ -1,6 +1,11 @@
 using api.Dtos.Comment;
+using api.Extensions;
+using api.Helpers;
 using api.Interfaces;
 using api.Mappers;
+using api.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 
 namespace api.Controllers
@@ -10,21 +15,28 @@ namespace api.Controllers
     public class CommentController : ControllerBase
     {
         private readonly ICommentRepository _commentRepo;
-
         private readonly IStockRepository _stockRepo;
-        public CommentController(ICommentRepository commentRepo, IStockRepository stockRepo)
+        private readonly UserManager<AppUser> _userManager;
+        private readonly IFMPService _fMPService;
+        public CommentController(ICommentRepository commentRepo,
+         IStockRepository stockRepo,
+         UserManager<AppUser> userManager,
+         IFMPService fMPService)
         {
             _commentRepo = commentRepo;
             _stockRepo = stockRepo;
+            _userManager = userManager;
+            _fMPService = fMPService;
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetAll()
+        [Authorize]
+        public async Task<IActionResult> GetAll(CommentQueryObject queryObject)
         {
             if(!ModelState.IsValid)
                 return BadRequest(ModelState);
 
-            var comments = await _commentRepo.GetAllAsync();
+            var comments = await _commentRepo.GetAllAsync(queryObject);
 
             var commentDto = comments.Select(s=> s.ToCommentDto());
             return Ok(commentDto);
@@ -44,18 +56,34 @@ namespace api.Controllers
             return Ok(comment.ToCommentDto());
         }
 
-        [HttpPost("{stockId:int}")]
-        public async Task<IActionResult> Create([FromRoute] int stockId,CreateCommentDto commentDto)
+        [HttpPost]
+        [Route("{symbol:alpha}")]
+        public async Task<IActionResult> Create([FromRoute] string symbol, CreateCommentDto commentDto)
         {
             if(!ModelState.IsValid)
                 return BadRequest(ModelState);
+            
+            var stock = await _stockRepo.GetBySymbolAsync(symbol);
 
-            if(!await _stockRepo.StockExists(stockId))
+            if(stock == null)
             {
-                return BadRequest("Stock does not exist");
+                stock = await _fMPService.FindStockBySymbolAsync(symbol);
+                if(stock == null)
+                {
+                    return BadRequest("Stock does not exists");
+                }
+                else
+                {
+                    await _stockRepo.CreateAsync(stock);
+                }
             }
 
-            var commentModel = commentDto.ToCommenFromCreate(stockId);
+            var username = User.GetUsername();
+            var appUser = await _userManager.FindByNameAsync(username);
+
+            var commentModel = commentDto.ToCommenFromCreate(stock.Id);
+
+            commentModel.AppUserId = appUser.Id;
             await _commentRepo.CreateAsync(commentModel);
             return CreatedAtAction(nameof(GetById), new {id=commentModel}, commentModel.ToCommentDto());
         }
